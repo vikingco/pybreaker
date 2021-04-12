@@ -9,6 +9,17 @@ from tornado import gen, testing
 from pybreaker import *
 
 
+class SuccessListener(CircuitBreakerListener):
+    def __init__(self):
+        self.success_count = 0
+        self.success_count_lock = threading.RLock()
+
+    def success(self, cb):
+        with self.success_count_lock:
+            sleep(0.00005)
+            self.success_count = self.success_count + 1
+
+
 class CircuitBreakerStorageBasedTestCase(object):
     """
     Mix in to test against different storage backings. Depends on
@@ -772,6 +783,7 @@ class CircuitBreakerTestCase(
 
 import logging
 
+
 class CircuitBreakerMultiplexerTestCase(unittest.TestCase):
     """
     Tests for the CircuitBreakerMultiplexer class.
@@ -781,7 +793,7 @@ class CircuitBreakerMultiplexerTestCase(unittest.TestCase):
         self.breaker = CircuitBreakerMultiplexer(fail_max=1)
 
     def test_positional_argument(self):
-        @self.breaker(break_on='arg')
+        @self.breaker(break_on="arg")
         def func(arg):
             if arg == 1:
                 raise Exception
@@ -794,7 +806,7 @@ class CircuitBreakerMultiplexerTestCase(unittest.TestCase):
         self.assertEqual(func(2), True)
 
     def test_keyword_argument(self):
-        @self.breaker(break_on='arg')
+        @self.breaker(break_on="arg")
         def func(arg):
             if arg == 1:
                 raise Exception
@@ -807,7 +819,7 @@ class CircuitBreakerMultiplexerTestCase(unittest.TestCase):
         self.assertEqual(func(arg=2), True)
 
     def test_default_argument(self):
-        @self.breaker(break_on='arg')
+        @self.breaker(break_on="arg")
         def func(arg=1):
             if arg == 1:
                 raise Exception
@@ -820,7 +832,7 @@ class CircuitBreakerMultiplexerTestCase(unittest.TestCase):
         self.assertEqual(func(2), True)
 
     def test_not_first_argument(self):
-        @self.breaker(break_on='other_arg')
+        @self.breaker(break_on="other_arg")
         def func(arg, other_arg=1):
             if other_arg == 1:
                 raise Exception
@@ -836,7 +848,7 @@ class CircuitBreakerMultiplexerTestCase(unittest.TestCase):
         self.assertEqual(func(1, 2), True)
 
     def test_keyword_only(self):
-        @self.breaker(break_on='other_arg')
+        @self.breaker(break_on="other_arg")
         def func(arg, *positional, other_arg=1):
             if other_arg == 1:
                 raise Exception
@@ -993,12 +1005,6 @@ class CircuitBreakerThreadsTestCase(unittest.TestCase):
                 except SpecificException:
                     pass
 
-        def _inc_counter(self):
-            c = self._state_storage._fail_counter
-            sleep(0.00005)
-            self._state_storage._fail_counter = c + 1
-
-        self._mock_function(self.breaker, _inc_counter)
         self._start_threads(trigger_error, 3)
         self.assertEqual(1500, self.breaker.fail_counter)
 
@@ -1015,17 +1021,10 @@ class CircuitBreakerThreadsTestCase(unittest.TestCase):
             for n in range(500):
                 suc()
 
-        class SuccessListener(CircuitBreakerListener):
-            def success(self, cb):
-                c = 0
-                if hasattr(cb, "_success_counter"):
-                    c = cb._success_counter
-                sleep(0.00005)
-                cb._success_counter = c + 1
-
-        self.breaker.add_listener(SuccessListener())
+        success_listener = SuccessListener()
+        self.breaker.add_listener(success_listener)
         self._start_threads(trigger_success, 3)
-        self.assertEqual(1500, self.breaker._success_counter)
+        self.assertEqual(1500, success_listener.success_count)
 
     def test_half_open_thread_safety(self):
         """CircuitBreaker: it should allow only one trial call when the
@@ -1085,7 +1084,7 @@ class CircuitBreakerThreadsTestCase(unittest.TestCase):
 
         self.breaker.add_listener(SleepListener())
         self._start_threads(trigger_error, 3)
-        self.assertEqual(self.breaker.fail_max, self.breaker.fail_counter)
+        self.assertGreater(self.breaker.fail_counter, self.breaker.fail_max)
 
 
 class CircuitBreakerRedisConcurrencyTestCase(unittest.TestCase):
@@ -1160,17 +1159,10 @@ class CircuitBreakerRedisConcurrencyTestCase(unittest.TestCase):
             for n in range(500):
                 suc()
 
-        class SuccessListener(CircuitBreakerListener):
-            def success(self, cb):
-                c = 0
-                if hasattr(cb, "_success_counter"):
-                    c = cb._success_counter
-                sleep(0.00005)
-                cb._success_counter = c + 1
-
-        self.breaker.add_listener(SuccessListener())
+        success_listener = SuccessListener()
+        self.breaker.add_listener(success_listener)
         self._start_threads(trigger_success, 3)
-        self.assertEqual(1500, self.breaker._success_counter)
+        self.assertEqual(1500, success_listener.success_count)
 
     def test_half_open_thread_safety(self):
         """CircuitBreaker: it should allow only one trial call when the
