@@ -5,6 +5,7 @@ by Michael T. Nygard in his book 'Release It!'.
 For more information on this and other patterns and best practices, buy the
 book at https://pragprog.com/titles/mnee2/release-it-second-edition/
 """
+
 from __future__ import annotations
 
 import calendar
@@ -15,6 +16,7 @@ import threading
 import time
 import types
 from abc import abstractmethod
+from contextlib import ContextDecorator
 from datetime import datetime, timedelta
 from functools import wraps
 from typing import (
@@ -73,6 +75,20 @@ CBListenerType = TypeVar("CBListenerType", bound="CircuitBreakerListener")
 CBStateType = Union["CircuitClosedState", "CircuitHalfOpenState", "CircuitOpenState"]
 
 
+logger = logging.getLogger(__name__)
+
+
+class track_entry_and_exit(ContextDecorator):
+    def __init__(self, name):
+        self.name = name
+
+    def __enter__(self):
+        logger.info("Entering: %s", self.name)
+
+    def __exit__(self, exc_type, exc, exc_tb):
+        logger.info("Exiting: %s", self.name)
+
+
 class CircuitBreaker:
     """
     More abstractly, circuit breakers exists to allow one subsystem to fail
@@ -115,8 +131,9 @@ class CircuitBreaker:
         """
         Returns the current number of consecutive failures.
         """
-        with self._lock:
-            return self._state_storage.counter
+        with track_entry_and_exit("fail_counter"):
+            with self._lock:
+                return self._state_storage.counter
 
     @property
     def fail_max(self) -> int:
@@ -191,10 +208,11 @@ class CircuitBreaker:
         """
         Set cached state and notify listeners of newly cached state.
         """
-        with self._lock:
-            self._state = self._create_new_state(
-                state_str, prev_state=self._state, notify=True
-            )
+        with track_entry_and_exit("state"):
+            with self._lock:
+                self._state = self._create_new_state(
+                    state_str, prev_state=self._state, notify=True
+                )
 
     @property
     def current_state(self) -> str:
@@ -202,8 +220,9 @@ class CircuitBreaker:
         Returns a string that identifies the state of the circuit breaker as
         reported by the _state_storage. i.e., 'closed', 'open', 'half-open'.
         """
-        with self._lock:
-            return self._state_storage.state
+        with track_entry_and_exit("current_state"):
+            with self._lock:
+                return self._state_storage.state
 
     @property
     def excluded_exceptions(self) -> Tuple[Type[ExceptionType], ...]:
@@ -217,8 +236,9 @@ class CircuitBreaker:
         """
         Adds an exception to the list of excluded exceptions.
         """
-        with self._lock:
-            self._excluded_exceptions.append(exception)
+        with track_entry_and_exit("add_excluded_exception"):
+            with self._lock:
+                self._excluded_exceptions.append(exception)
 
     def add_excluded_exceptions(self, *exceptions: Type[ExceptionType]) -> None:
         """
@@ -231,15 +251,17 @@ class CircuitBreaker:
         """
         Removes an exception from the list of excluded exceptions.
         """
-        with self._lock:
-            self._excluded_exceptions.remove(exception)
+        with track_entry_and_exit("remove_excluded_exception"):
+            with self._lock:
+                self._excluded_exceptions.remove(exception)
 
     def _inc_counter(self) -> None:
         """
         Increments the counter of failed calls.
         """
-        with self._lock:
-            self._state_storage.increment_counter()
+        with track_entry_and_exit("_inc_counter"):
+            with self._lock:
+                self._state_storage.increment_counter()
 
     def is_system_error(self, exception: ExceptionType) -> bool:
         """
@@ -284,11 +306,12 @@ class CircuitBreaker:
         Opens the circuit, e.g., the following calls will immediately fail
         until timeout elapses.
         """
-        with self._lock:
-            self._state_storage.opened_at = datetime.utcnow()
-            self.state = self._state_storage.state = STATE_OPEN  # type: ignore[assignment]
+        with track_entry_and_exit("open"):
+            with self._lock:
+                self._state_storage.opened_at = datetime.utcnow()
+                self.state = self._state_storage.state = STATE_OPEN  # type: ignore[assignment]
 
-            return self._throw_new_error_on_trip
+                return self._throw_new_error_on_trip
 
     def half_open(self) -> None:
         """
@@ -296,15 +319,17 @@ class CircuitBreaker:
         opens the circuit if the call fails (or closes the circuit if the call
         succeeds).
         """
-        with self._lock:
-            self.state = self._state_storage.state = STATE_HALF_OPEN  # type: ignore[assignment]
+        with track_entry_and_exit("half_open"):
+            with self._lock:
+                self.state = self._state_storage.state = STATE_HALF_OPEN  # type: ignore[assignment]
 
     def close(self) -> None:
         """
         Closes the circuit, e.g. lets the following calls execute as usual.
         """
-        with self._lock:
-            self.state = self._state_storage.state = STATE_CLOSED  # type: ignore[assignment]
+        with track_entry_and_exit("close"):
+            with self._lock:
+                self.state = self._state_storage.state = STATE_CLOSED  # type: ignore[assignment]
 
     def __call__(self, *call_args: Any, **call_kwargs: bool) -> Callable:
         """
@@ -343,8 +368,9 @@ class CircuitBreaker:
         """
         Registers a listener for this circuit breaker.
         """
-        with self._lock:
-            self._listeners.append(listener)  # type: ignore[arg-type]
+        with track_entry_and_exit("add_listener"):
+            with self._lock:
+                self._listeners.append(listener)  # type: ignore[arg-type]
 
     def add_listeners(self, *listeners: CBListenerType) -> None:
         """
@@ -357,8 +383,9 @@ class CircuitBreaker:
         """
         Unregisters a listener of this circuit breaker.
         """
-        with self._lock:
-            self._listeners.remove(listener)  # type: ignore[arg-type]
+        with track_entry_and_exit("remove_listener"):
+            with self._lock:
+                self._listeners.remove(listener)  # type: ignore[arg-type]
 
     @property
     def name(self) -> str | None:
@@ -397,7 +424,9 @@ class CircuitBreakerMultiplexer(object):
                 parameters = inspect.signature(func).parameters
                 arg_position = list(parameters.keys()).index(break_on)
                 default_value = parameters[break_on].default
-                keyword_only = parameters[break_on].kind == inspect.Parameter.KEYWORD_ONLY
+                keyword_only = (
+                    parameters[break_on].kind == inspect.Parameter.KEYWORD_ONLY
+                )
             except ValueError:
                 # The provided argument is not listed.
                 raise ValueError("%s is not an argument of the function" % break_on)
@@ -705,7 +734,6 @@ class CircuitRedisStorage(CircuitBreakerStorage):
             key = self._namespace("opened_at")
 
             if self._cluster_mode:
-
                 current_value = self._redis.get(key)
                 next_value = int(calendar.timegm(now.timetuple()))
 
@@ -795,12 +823,12 @@ class CircuitBreakerState:
     @overload
     def _handle_error(
         self, exc: BaseException, reraise: Literal[True] = ...
-    ) -> NoReturn:
-        ...
+    ) -> NoReturn: ...
 
     @overload
-    def _handle_error(self, exc: BaseException, reraise: Literal[False] = ...) -> None:
-        ...
+    def _handle_error(
+        self, exc: BaseException, reraise: Literal[False] = ...
+    ) -> None: ...
 
     def _handle_error(self, exc: BaseException, reraise: bool = True) -> None:
         """
